@@ -28,22 +28,28 @@ exports.handler = async function (event) {
     }
     const data = await res.json();
     const item = data && data.datas && data.datas[0];
-    if (!item || item.nv === undefined) {
+    if (!item || item.closePrice === undefined) {
       return {
         statusCode: 404,
         headers,
-        body: JSON.stringify({ error: "해당 종목코드의 시세를 찾을 수 없습니다" }),
+        body: JSON.stringify({ error: "해당 종목코드의 시세를 찾을 수 없습니다", raw: item || null }),
       };
     }
+    // closePrice 등은 "71,500" 처럼 콤마가 포함된 문자열로 오는 경우가 있어 숫자만 추출
+    const toNumber = (v) => {
+      if (v === undefined || v === null) return null;
+      const n = Number(String(v).replace(/,/g, ""));
+      return isNaN(n) ? null : n;
+    };
     return {
       statusCode: 200,
       headers,
       body: JSON.stringify({
         code,
-        name: item.nm || code,
-        price: Number(item.nv),      // 현재가
-        change: Number(item.cv),     // 전일대비
-        changeRate: Number(item.cr), // 등락률(%)
+        name: item.stockName || item.itemCode || code,
+        price: toNumber(item.closePrice),              // 현재가
+        change: toNumber(item.compareToPreviousClosePrice), // 전일대비
+        changeRate: toNumber(item.fluctuationsRatio),   // 등락률(%)
       }),
     };
   } catch (e) {
