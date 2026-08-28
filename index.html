@@ -29,6 +29,15 @@
   .icon-btn { background: rgba(255,255,255,0.12); border: none; border-radius: 9px; padding: 7px 9px; cursor: pointer; font-size: 14px; color: #FFF; }
 
   .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .summary-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 420px) {
+    .summary-grid-3 { grid-template-columns: 1fr 1fr; }
+    .summary-grid-3 .summary-card:nth-child(3) { grid-column: 1 / -1; }
+  }
+  .summary-card { padding: 12px; }
+  @media (max-width: 420px) {
+    .summary-value { font-size: 16px; }
+  }
   .summary-card { background: rgba(255,255,255,0.06); border-radius: 12px; padding: 14px; }
   .summary-label { font-size: 11px; color: #9FB0CC; margin-bottom: 6px; }
   .summary-value { font-size: 19px; font-weight: 800; }
@@ -139,16 +148,21 @@
       <button class="icon-btn" onclick="openPriceUpdateAll()">✏️ 수동갱신</button>
     </div>
   </div>
-  <div class="summary-grid">
+  <div class="summary-grid summary-grid-3">
     <div class="summary-card">
       <div class="summary-label">총 평가금액</div>
       <div class="summary-value" id="totalValue">0원</div>
       <div class="summary-sub neu" id="totalInvested">투자원금 0원</div>
     </div>
     <div class="summary-card">
-      <div class="summary-label">평가손익</div>
+      <div class="summary-label">평가손익 <span style="font-weight:400;">(미실현)</span></div>
       <div class="summary-value" id="totalPL">0원</div>
       <div class="summary-sub" id="totalPLPct">0%</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">누적 실현손익</div>
+      <div class="summary-value" id="realizedPL">0원</div>
+      <div class="summary-sub neu" id="realizedPLCount">매도 거래 0건</div>
     </div>
   </div>
 </div>
@@ -289,6 +303,13 @@ function computeSummary() {
   const totalPL = totalValue - totalInvested;
   const totalPLPct = totalInvested > 0 ? (totalPL / totalInvested) * 100 : 0;
   return { totalInvested, totalValue, totalPL, totalPLPct };
+}
+
+// 누적 실현손익: 지금까지의 모든 매도 거래에서 발생한 손익 합산 (보유종목 삭제되어도 영구 보존)
+function computeRealizedPL() {
+  const sellTxs = transactions.filter(tx => tx.type === "sell" && typeof tx.realizedPL === "number");
+  const total = sellTxs.reduce((sum, tx) => sum + tx.realizedPL, 0);
+  return { total, count: sellTxs.length };
 }
 
 // ===== 거래 모달 =====
@@ -444,6 +465,7 @@ async function autoSyncAllPrices() {
 
   let successCount = 0, failCount = 0;
   const failedNames = [];
+  const errorDetails = [];
 
   await Promise.all(withCode.map(async (h) => {
     try {
@@ -455,10 +477,12 @@ async function autoSyncAllPrices() {
       } else {
         failCount++;
         failedNames.push(h.ticker);
+        errorDetails.push(`${h.ticker}: ${data.error || "알 수 없는 오류"} (상태코드 ${res.status})`);
       }
     } catch (e) {
       failCount++;
       failedNames.push(h.ticker);
+      errorDetails.push(`${h.ticker}: 네트워크 오류 - ${e.message}`);
     }
   }));
 
@@ -472,7 +496,7 @@ async function autoSyncAllPrices() {
     statusEl.textContent = `⚠ ${successCount}개 성공, ${failCount}개 실패`;
     statusEl.style.color = "#FF8A8A";
     if (successCount === 0) {
-      alert("자동 시세 조회에 실패했습니다.\n\n이 기능은 GitHub 연동으로 배포한 사이트에서만 작동합니다 (Netlify Drop 방식은 지원 안 함).\n실패 종목: " + failedNames.join(", "));
+      alert("자동 시세 조회에 실패했습니다.\n\n" + errorDetails.join("\n") + "\n\n(함수가 아예 배포되지 않았다면 '404 Not Found'가, 종목코드는 맞는데 응답 구조가 안 맞으면 다른 오류 메시지가 표시됩니다.)");
     }
   }
   setTimeout(() => { statusEl.textContent = ""; }, 3000);
@@ -496,6 +520,13 @@ function render() {
   plEl.className = "summary-value " + (totalPL >= 0 ? "pos" : "neg");
   plPctEl.textContent = fmtPct(totalPLPct);
   plPctEl.className = "summary-sub " + (totalPL >= 0 ? "pos" : "neg");
+
+  const { total: realizedPL, count: realizedCount } = computeRealizedPL();
+  const rpEl = document.getElementById("realizedPL");
+  const rpCountEl = document.getElementById("realizedPLCount");
+  rpEl.textContent = fmtWon(realizedPL);
+  rpEl.className = "summary-value " + (realizedPL > 0 ? "pos" : realizedPL < 0 ? "neg" : "neu");
+  rpCountEl.textContent = `매도 거래 ${realizedCount}건`;
 
   renderHoldings();
   renderAllocation(totalValue);
