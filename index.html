@@ -90,6 +90,7 @@
 
   /* Transaction log */
   .tx-item { display: flex; align-items: center; gap: 12px; background: #FFF; border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+  .tx-edit-btn { background: #F1F3F7; border: none; border-radius: 8px; padding: 8px; cursor: pointer; font-size: 13px; flex-shrink: 0; }
   .tx-type { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800; flex-shrink: 0; }
   .tx-type.buy { background: #EBF1FC; color: #2E5CB8; }
   .tx-type.sell { background: #FDECEC; color: #D8574E; }
@@ -239,6 +240,34 @@
     <div class="modal-actions">
       <button class="btn-confirm" onclick="confirmPriceUpdate()">저장</button>
       <button class="btn-cancel" onclick="closeModal('priceModal')">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- 거래내역 수정 모달 -->
+<div class="modal-overlay" id="editTxModal">
+  <div class="modal-sheet">
+    <div class="modal-title" id="editTxModalTitle">거래 수정</div>
+
+    <div class="field-label">거래 수량</div>
+    <input type="number" id="editTxQty" min="0" step="1" />
+
+    <div class="field-label">거래 단가 (1주당)</div>
+    <input type="number" id="editTxPrice" min="0" />
+
+    <div class="field-label">거래일</div>
+    <input type="date" id="editTxDate" />
+
+    <div class="calc-preview" id="editTxPreview" style="color:#8A6D1F;background:#FFF6E0;">
+      ⚠️ 저장하면 이 종목의 평단가·보유수량·실현손익이 전체 거래내역 기준으로 다시 계산됩니다.
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn-confirm" onclick="confirmEditTx()">저장</button>
+      <button class="btn-cancel" onclick="closeModal('editTxModal')">취소</button>
+    </div>
+    <div class="modal-actions" style="margin-top:8px;">
+      <button style="flex:1;background:#FDECEC;color:#D8574E;border:none;border-radius:10px;padding:12px 0;font-weight:700;cursor:pointer;font-size:13px;" onclick="deleteEditingTx()">이 거래 삭제</button>
     </div>
   </div>
 </div>
@@ -509,6 +538,95 @@ function deleteHolding(id) {
   render();
 }
 
+// ===== 거래내역 수정 =====
+let editingTxId = null;
+
+function openEditTx(txId) {
+  const tx = transactions.find(t => t.id === txId);
+  if (!tx) return;
+  editingTxId = txId;
+  document.getElementById("editTxModalTitle").textContent = `${tx.ticker} 거래 수정 (${tx.type === "buy" ? "매수" : "매도"})`;
+  document.getElementById("editTxQty").value = tx.qty;
+  document.getElementById("editTxPrice").value = tx.price;
+  document.getElementById("editTxDate").value = tx.date;
+  document.getElementById("editTxModal").classList.add("show");
+}
+
+function confirmEditTx() {
+  const tx = transactions.find(t => t.id === editingTxId);
+  if (!tx) return;
+  const qty = parseFloat(document.getElementById("editTxQty").value);
+  const price = parseFloat(document.getElementById("editTxPrice").value);
+  const date = document.getElementById("editTxDate").value;
+  if (!qty || qty <= 0 || !price || price <= 0 || !date) {
+    alert("수량, 단가, 날짜를 정확히 입력해 주세요.");
+    return;
+  }
+  tx.qty = qty;
+  tx.price = price;
+  tx.date = date;
+
+  saveJSON("stock-transactions", transactions);
+  recalcHoldingFromTransactions(tx.ticker);
+  showSaveStatus();
+  closeModal("editTxModal");
+  render();
+}
+
+function deleteEditingTx() {
+  const tx = transactions.find(t => t.id === editingTxId);
+  if (!tx) return;
+  if (!confirm("이 거래 내역을 삭제하시겠습니까? 해당 종목의 평단가·수량이 다시 계산됩니다.")) return;
+  const ticker = tx.ticker;
+  transactions = transactions.filter(t => t.id !== editingTxId);
+  saveJSON("stock-transactions", transactions);
+  recalcHoldingFromTransactions(ticker);
+  closeModal("editTxModal");
+  render();
+}
+
+// 특정 종목의 모든 거래를 날짜순으로 재생(replay)하여
+// 평단가·보유수량·각 매도건의 실현손익을 처음부터 다시 계산합니다.
+// (과거 거래를 수정/삭제해도 숫자가 항상 정확하게 맞도록 하기 위함)
+function recalcHoldingFromTransactions(ticker) {
+  const txs = transactions
+    .filter(t => t.ticker === ticker)
+    .sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+
+  let qty = 0, avgPrice = 0;
+  txs.forEach(tx => {
+    if (tx.type === "buy") {
+      const newQty = qty + tx.qty;
+      avgPrice = newQty > 0 ? ((qty * avgPrice) + (tx.qty * tx.price)) / newQty : tx.price;
+      qty = newQty;
+    } else {
+      // 매도: 실현손익을 그 시점 평단가 기준으로 재계산하여 거래기록에 반영
+      tx.realizedPL = tx.qty * (tx.price - avgPrice);
+      qty = Math.max(0, qty - tx.qty);
+    }
+  });
+  saveJSON("stock-transactions", transactions);
+
+  const existing = holdings.find(h => h.ticker === ticker);
+  if (qty > 0) {
+    if (existing) {
+      existing.qty = qty;
+      existing.avgPrice = avgPrice;
+      // currentPrice, code는 유지
+    } else {
+      holdings.push({
+        id: "h" + Date.now(),
+        ticker, name: ticker, code: null,
+        qty, avgPrice, currentPrice: avgPrice,
+      });
+    }
+  } else {
+    // 수량이 0 이하가 되면 보유목록에서 제거 (거래내역은 그대로 유지)
+    holdings = holdings.filter(h => h.ticker !== ticker);
+  }
+  saveJSON("stock-holdings", holdings);
+}
+
 // ===== 렌더 =====
 function render() {
   const { totalInvested, totalValue, totalPL, totalPLPct } = computeSummary();
@@ -620,6 +738,7 @@ function renderHistory() {
           <div class="tx-amount">${fmtWon(amount)}</div>
           ${tx.type === "sell" && tx.realizedPL !== undefined ? `<div class="tx-pl ${tx.realizedPL >= 0 ? 'pos' : 'neg'}">실현 ${fmtWon(tx.realizedPL)}</div>` : ""}
         </div>
+        <button class="tx-edit-btn" onclick="openEditTx('${tx.id}')">✏️</button>
       </div>`;
   });
   container.innerHTML = html;
